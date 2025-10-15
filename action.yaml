@@ -2,36 +2,39 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+# docker-save-images-action
+# Saves docker artifacts created by a workflow
+# Saved docker artifacts can be used by subsequent jobs. for ex: deploy and test
+name: "save-artifacts"
+# yamllint disable-line rule:line-length
+description: "Save Docker Artifacts to be used later in the workflow. Can be extended for other artifacts if required, ex: maven"
 
 inputs:
-  input:
-    description: "Description of input"
+  docker-artifacts-to-save:
+    description: "Space separated list of docker image names to be saved"
     required: true
-
-outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+    default: ""
 
 runs:
   using: "composite"
   steps:
-    - name: "Friendly Name"
-      id: code
+    - name: 'Export Docker image(s) as tar'
+      id: export_docker_images
       shell: bash
       run: |
-        # Friendly Name
-        input="${{ inputs.input }}"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
+        image_list = ${{ inputs.docker-artifacts-to-save }}
+        if [ -z "$image_list" ]; then
+          echo "Mandatory docker image names not provided"
           exit 1
         fi
+        docker save ${image_list} -o docker-images.tar
+        echo "docker-image-tar=docker-images.tar" >> $GITHUB_OUTPUT
 
-        echo "output=$input" >> "$GITHUB_ENV"
-        echo "output=$input" >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+    - name: 'Upload docker images tar artifact'
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-image
+        path: docker-images.tar
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 1

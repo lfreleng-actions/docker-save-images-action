@@ -48,7 +48,7 @@ jobs:
       - name: "Running local action: ${{ github.repository }}"
         uses: ./
         with:
-          input: "test input 💬"
+          docker-artifacts-to-save: "image-1:latest image-2:latest 💬"
 
       - name: "Validated local action: ${{ github.repository }}"
         shell: bash
