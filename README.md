@@ -55,7 +55,7 @@ artifacts:
 
 The action performs the following steps:
 
-1. **Saves docker imags as tar**: Uses the "docker save" command and passes
+1. **Saves docker images as tar**: Uses the "docker save" command and passes
     the comma separated image list to create a tar file
 2. **Upload tar file**: Uploads the created tar file using the
     [upload-artifact](https://github.com/actions/upload-artifact) action
