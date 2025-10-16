@@ -43,12 +43,14 @@ jobs:
         run: |
           # Testing setup step
           echo "Testing setup step"
+          docker pull hello-world:latest
+          docker pull busybox:latest
           echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "Running local action: ${{ github.repository }}"
         uses: ./
         with:
-          input: "test input 💬"
+          docker-artifacts-to-save: "hello-world:latest busybox:latest"
 
       - name: "Validated local action: ${{ github.repository }}"
         shell: bash
