@@ -32,9 +32,11 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name          | Required | Default | Description                             |
-| ------------- | -------- | ------- | --------------------------------------- |
-| docker-artifacts-to-save   | True    | ""     | Space separated list of docker image names along with their tags   |
+| Name                     | Required | Default | Description                                                      |
+| ------------------------ | -------- | ------- | ---------------------------------------------------------------- |
+| docker-artifacts-to-save | True     | ""      | Space separated list of docker image names along with their tags |
+
+<!-- markdownlint-enable MD013 -->
 
 Ex: docker-artifacts-to-save: "o-ran-sc/oam-oam-controller/sdnr-image:latest o-ran-sc/oam-oam-controller/sdnr-web-image:latest"
 
