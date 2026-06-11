@@ -21,15 +21,17 @@ runs:
     - name: 'Export Docker image(s) as tar'
       id: export_docker_images
       shell: bash
+      env:
+        INPUT_IMAGE_LIST: ${{ inputs.docker-artifacts-to-save }}
       run: |
-        image_list="${{ inputs.docker-artifacts-to-save }}"
+        image_list="$INPUT_IMAGE_LIST"
         if [ -z "$image_list" ]; then
           echo "Mandatory docker image names not provided"
           exit 1
         fi
         read -ra images <<< "$image_list"
         docker save "${images[@]}" -o docker-images.tar
-        echo "docker-image-tar=docker-images.tar" >> $GITHUB_OUTPUT
+        echo "docker-image-tar=docker-images.tar" >> "$GITHUB_OUTPUT"
 
     - name: 'Upload docker images tar artifact'
       # yamllint disable-line rule:line-length
