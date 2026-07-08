@@ -41,6 +41,8 @@ jobs:
 
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       # Perform setup prior to running test(s)
       - name: "Testing setup step"
@@ -59,9 +61,11 @@ jobs:
 
       - name: "Validated local action: ${{ github.repository }}"
         shell: bash
+        env:
+          GH_REPOSITORY: "${{ github.repository }}"
         run: |
           # Local action validation
-          echo "Validated local action: ${{ github.repository }}"
+          echo "Validated local action: $GH_REPOSITORY"
           echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
 
       # yamllint disable-line rule:line-length
