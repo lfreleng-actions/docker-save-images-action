@@ -68,6 +68,344 @@ jobs:
           echo "Validated local action: $GH_REPOSITORY"
           echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
 
+      # --- per-image mode -------------------------------------
+      - name: "Running local action [per-image mode]"
+        uses: ./
+        id: per_image
+        with:
+          docker-artifacts-to-save: "hello-world:latest busybox:latest"
+          mode: "per-image"
+          artifact-name: "docker-archives-per-image"
+          overwrite: "false"
+
+      - name: "Validate per-image archives"
+        shell: bash
+        env:
+          ARCHIVE_DIR: "${{ steps.per_image.outputs.archive-directory }}"
+          ARCHIVE_COUNT: "${{ steps.per_image.outputs.archive-count }}"
+          ARTIFACT_NAME: "${{ steps.per_image.outputs.artifact-name }}"
+        run: |
+          # One tar per image, named after the image reference
+          set -euo pipefail
+          echo "dir=${ARCHIVE_DIR} count=${ARCHIVE_COUNT}"
+          if [ "${ARCHIVE_COUNT}" != "2" ]; then
+            echo "Expected 2 archives, got ${ARCHIVE_COUNT} ❌"
+            exit 1
+          fi
+          if [ "${ARTIFACT_NAME}" != "docker-archives-per-image" ]; then
+            echo "artifact-name output not echoed correctly ❌"
+            exit 1
+          fi
+          test -f "${ARCHIVE_DIR}/hello-world_latest.tar"
+          test -f "${ARCHIVE_DIR}/busybox_latest.tar"
+          echo "Per-image archives written correctly ✅"
+
+      # --- single mode still writes the original layout ---------
+      - name: "Running local action [single mode, explicit name]"
+        uses: ./
+        id: single_mode
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "single"
+          artifact-name: "docker-archives-single"
+          output-directory: "single-out"
+
+      - name: "Validate single-mode archive"
+        shell: bash
+        env:
+          TAR_PATH: "${{ steps.single_mode.outputs.docker-image-tar }}"
+          ARCHIVE_COUNT: "${{ steps.single_mode.outputs.archive-count }}"
+        run: |
+          # Combined tar at the requested location
+          set -euo pipefail
+          if [ "${TAR_PATH}" != "single-out/docker-images.tar" ]; then
+            echo "Unexpected tar path '${TAR_PATH}' ❌"
+            exit 1
+          fi
+          test -f "${TAR_PATH}"
+          if [ "${ARCHIVE_COUNT}" != "1" ]; then
+            echo "Expected 1 archive, got ${ARCHIVE_COUNT} ❌"
+            exit 1
+          fi
+          echo "Single-mode archive written correctly ✅"
+
+      # --- empty list, permitted --------------------------------
+      - name: "Running local action [empty list permitted]"
+        uses: ./
+        id: empty_ok
+        with:
+          docker-artifacts-to-save: ""
+          fail-on-empty: "false"
+
+      - name: "Validate empty list is a no-op"
+        shell: bash
+        env:
+          ARCHIVE_COUNT: "${{ steps.empty_ok.outputs.archive-count }}"
+        run: |
+          # No images is a valid outcome when fail-on-empty is false
+          set -euo pipefail
+          if [ "${ARCHIVE_COUNT}" != "0" ]; then
+            echo "Expected 0 archives, got ${ARCHIVE_COUNT} ❌"
+            exit 1
+          fi
+          echo "Empty image list handled without upload ✅"
+
+      # --- invalid mode must fail -------------------------------
+      - name: "Running local action [invalid mode]"
+        uses: ./
+        id: bad_mode
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "nonsense"
+
+      - name: "Error if invalid mode did NOT fail"
+        if: steps.bad_mode.outcome == 'success'
+        shell: bash
+        run: |
+          # An unrecognised mode must be rejected
+          echo "Error: invalid mode was accepted ❌"
+          exit 1
+
+      # --- per-image into the workspace root must fail ----------
+      - name: "Running local action [per-image at workspace root]"
+        uses: ./
+        id: bad_dir
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "per-image"
+          output-directory: "."
+
+      - name: "Error if workspace-root per-image did NOT fail"
+        if: steps.bad_dir.outcome == 'success'
+        shell: bash
+        run: |
+          # Uploading the whole workspace must not be possible
+          echo "Error: per-image accepted '.' as output directory ❌"
+          exit 1
+
+      # --- symlink handling -------------------------------------
+      # A symlinked ancestor must not let mkdir create directories
+      # outside the workspace, and docker save must not write through
+      # a symlinked destination.
+
+      - name: "Seed symlinks pointing outside the workspace"
+        shell: bash
+        run: |
+          # Escape routes the action has to refuse
+          set -euo pipefail
+          mkdir -p /tmp/outside-target
+          ln -sfn /tmp/outside-target escape-link
+          mkdir -p sym-dest
+          ln -sfn /tmp/outside-target/redirected.tar \
+            sym-dest/docker-images.tar
+
+      - name: "Running local action [symlinked ancestor]"
+        uses: ./
+        id: symlink_ancestor
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "per-image"
+          output-directory: "escape-link/new"
+
+      - name: "Validate symlinked ancestor refused before mkdir"
+        shell: bash
+        env:
+          STEP_OUTCOME: "${{ steps.symlink_ancestor.outcome }}"
+        run: |
+          # The step must fail AND leave nothing outside the workspace
+          set -euo pipefail
+          if [ "${STEP_OUTCOME}" = "success" ]; then
+            echo "Error: symlinked ancestor was accepted ❌"
+            exit 1
+          fi
+          if [ -e "/tmp/outside-target/new" ]; then
+            echo "Error: mkdir created a directory outside ❌"
+            exit 1
+          fi
+          echo "Symlinked ancestor refused, nothing created ✅"
+
+      - name: "Running local action [symlinked destination]"
+        uses: ./
+        id: symlink_dest
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "single"
+          output-directory: "sym-dest"
+
+      - name: "Validate symlinked destination refused"
+        shell: bash
+        env:
+          STEP_OUTCOME: "${{ steps.symlink_dest.outcome }}"
+        run: |
+          # The archive must not be written through the link
+          set -euo pipefail
+          if [ "${STEP_OUTCOME}" = "success" ]; then
+            echo "Error: symlinked destination was accepted ❌"
+            exit 1
+          fi
+          if [ -e "/tmp/outside-target/redirected.tar" ]; then
+            echo "Error: archive written through the symlink ❌"
+            exit 1
+          fi
+          echo "Symlinked destination refused ✅"
+
+      - name: "Clean up symlink fixtures"
+        shell: bash
+        run: |
+          # Keep later steps working from a clean tree
+          rm -rf escape-link sym-dest /tmp/outside-target
+
+      # --- archives only, not the whole directory ---------------
+      # Pointing output-directory at a directory that already holds
+      # other files must not sweep those files into the artifact.
+      - name: "Seed a directory with an unrelated file"
+        shell: bash
+        run: |
+          # Pre-existing content that must stay out of the artifact
+          mkdir -p shared-out
+          echo "must not be uploaded" > shared-out/stray.txt
+
+      - name: "Running local action [pre-populated directory]"
+        uses: ./
+        id: scoped
+        with:
+          docker-artifacts-to-save: "hello-world:latest busybox:latest"
+          mode: "per-image"
+          output-directory: "shared-out"
+          artifact-name: "docker-archives-scoped"
+
+      - name: "Download the artifact just uploaded"
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: "docker-archives-scoped"
+          path: "downloaded"
+
+      - name: "Validate the artifact holds archives only"
+        shell: bash
+        run: |
+          # The stray file must be absent; both archives present
+          set -euo pipefail
+          echo "artifact contents:"
+          find downloaded -type f | sort
+          if [ -e "downloaded/stray.txt" ]; then
+            echo "Unrelated file leaked into the artifact ❌"
+            exit 1
+          fi
+          test -f "downloaded/hello-world_latest.tar"
+          test -f "downloaded/busybox_latest.tar"
+          echo "Artifact scoped to the written archives ✅"
+
+      # --- input validation regressions -------------------------
+      # Each case below caused a real defect during review: a value
+      # reaching GITHUB_OUTPUT could append a record of its own, a
+      # lexical path check accepted './.', a mistyped boolean opted
+      # out silently, and upload-artifact glob-expanded the path.
+
+      - name: "Running local action [newline in artifact-name]"
+        uses: ./
+        id: bad_artifact_name
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          artifact-name: "safe\ndocker-image-tar=."
+
+      - name: "Error if newline artifact-name did NOT fail"
+        if: steps.bad_artifact_name.outcome == 'success'
+        shell: bash
+        run: |
+          # A line break could inject an extra GITHUB_OUTPUT record
+          echo "Error: artifact-name with a line break was accepted"
+          exit 1
+
+      - name: "Running local action [dot-slash-dot output directory]"
+        uses: ./
+        id: dot_slash_dot
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "per-image"
+          output-directory: "./."
+
+      - name: "Error if './.' did NOT fail"
+        if: steps.dot_slash_dot.outcome == 'success'
+        shell: bash
+        run: |
+          # './.' resolves to the workspace root
+          echo "Error: per-image accepted './.' as output directory"
+          exit 1
+
+      - name: "Running local action [mistyped boolean]"
+        uses: ./
+        id: bad_boolean
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: ""
+          fail-on-empty: "treu"
+
+      - name: "Error if mistyped boolean did NOT fail"
+        if: steps.bad_boolean.outcome == 'success'
+        shell: bash
+        run: |
+          # A typo must not silently opt out of the empty-list check
+          echo "Error: fail-on-empty accepted a non-boolean value"
+          exit 1
+
+      - name: "Running local action [tilde output directory]"
+        uses: ./
+        id: tilde_dir
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "per-image"
+          output-directory: "~"
+
+      - name: "Error if tilde output-directory did NOT fail"
+        if: steps.tilde_dir.outcome == 'success'
+        shell: bash
+        run: |
+          # @actions/glob expands a leading '~' to the runner home
+          echo "Error: output-directory accepted '~'"
+          exit 1
+
+      - name: "Running local action [negation output directory]"
+        uses: ./
+        id: bang_dir
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "per-image"
+          output-directory: "!out"
+
+      - name: "Error if '!' output-directory did NOT fail"
+        if: steps.bang_dir.outcome == 'success'
+        shell: bash
+        run: |
+          # @actions/glob treats a leading '!' as negation
+          echo "Error: output-directory accepted '!out'"
+          exit 1
+
+      - name: "Running local action [glob in output directory]"
+        uses: ./
+        id: glob_dir
+        continue-on-error: true
+        with:
+          docker-artifacts-to-save: "hello-world:latest"
+          mode: "per-image"
+          output-directory: "*"
+
+      - name: "Error if glob output-directory did NOT fail"
+        if: steps.glob_dir.outcome == 'success'
+        shell: bash
+        run: |
+          # upload-artifact expands 'path' as a wildcard pattern
+          echo "Error: output-directory accepted a glob character"
+          exit 1
+
       # yamllint disable-line rule:line-length
       - name: "Running local action: ${{ github.repository }} [Override Failure]"
         uses: ./

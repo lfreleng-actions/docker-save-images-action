@@ -14,6 +14,79 @@ inputs:
     description: "Space separated list of docker image names to be saved"
     required: true
     default: ""
+  mode:
+    # yamllint disable-line rule:line-length
+    description: >
+      Archive layout: 'single' writes every image into one tar,
+      'per-image' writes one tar per image so consumers can process
+      images individually (per-image SBOM generation, per-image
+      vulnerability scanning). Defaults to 'single'.
+    required: false
+    default: "single"
+  artifact-name:
+    # yamllint disable-line rule:line-length
+    description: >
+      Name of the uploaded artifact, limited to letters, digits, dot,
+      dash and underscore. Callers invoking a reusable workflow more
+      than once in a single run must vary this, because GitHub scopes
+      artifacts per run: identical names collide and, with overwrite
+      enabled, the last writer wins without warning.
+    required: false
+    default: "docker-image"
+  overwrite:
+    # yamllint disable-line rule:line-length
+    description: >
+      Whether uploading replaces an existing artifact of the same
+      name ('true' or 'false'). Set false to make a collision fail
+      loudly instead.
+    required: false
+    default: "true"
+  retention-days:
+    description: "Days to retain the uploaded artifact (whole number)"
+    required: false
+    default: "1"
+  output-directory:
+    # yamllint disable-line rule:line-length
+    description: >
+      Directory to write archives into, relative to the workspace and
+      free of glob characters. Empty (the default) resolves to the
+      workspace root for 'single' mode, preserving the original
+      'docker-images.tar' location, and to 'docker-images' for
+      'per-image' mode.
+    required: false
+    default: ""
+  fail-on-empty:
+    # yamllint disable-line rule:line-length
+    description: >
+      Whether an empty image list fails the step ('true' or 'false').
+      Set false for pipelines where producing no images is a valid
+      outcome, such as a build permitted to fail; the step then exits
+      successfully without uploading anything.
+    required: false
+    default: "true"
+
+outputs:
+  docker-image-tar:
+    # yamllint disable-line rule:line-length
+    description: "Path of the combined tar, in 'single' mode"
+    value: "${{ steps.export_docker_images.outputs.docker-image-tar }}"
+  archive-directory:
+    description: "Directory holding the written archive(s)"
+    # yamllint disable-line rule:line-length
+    value: "${{ steps.export_docker_images.outputs.archive-directory }}"
+  archive-count:
+    description: "Number of archives written"
+    # yamllint disable-line rule:line-length
+    value: "${{ steps.export_docker_images.outputs.archive-count }}"
+  artifact-name:
+    description: "Name of the uploaded artifact, echoed for consumers"
+    # yamllint disable-line rule:line-length
+    value: "${{ steps.export_docker_images.outputs.artifact-name }}"
+  archive-paths:
+    # yamllint disable-line rule:line-length
+    description: "Newline-separated list of the archive files written"
+    # yamllint disable-line rule:line-length
+    value: "${{ steps.export_docker_images.outputs.archive-paths }}"
 
 runs:
   using: "composite"
@@ -23,22 +96,287 @@ runs:
       shell: bash
       env:
         INPUT_IMAGE_LIST: ${{ inputs.docker-artifacts-to-save }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+        INPUT_FAIL_ON_EMPTY: ${{ inputs.fail-on-empty }}
+        INPUT_OVERWRITE: ${{ inputs.overwrite }}
+        INPUT_RETENTION_DAYS: ${{ inputs.retention-days }}
       run: |
-        image_list="$INPUT_IMAGE_LIST"
-        if [ -z "$image_list" ]; then
-          echo "Mandatory docker image names not provided"
+        # Write the requested images to disk, either as one combined
+        # tar or as one tar per image, and report what was written so
+        # the upload step and downstream consumers can act on it.
+        set -euo pipefail
+
+        image_list="${INPUT_IMAGE_LIST}"
+        mode="${INPUT_MODE}"
+        artifact_name="${INPUT_ARTIFACT_NAME}"
+        out_dir="${INPUT_OUTPUT_DIRECTORY}"
+
+        # --- input validation -------------------------------------
+        # Every public input is checked before use. Values reaching
+        # GITHUB_OUTPUT become single-line 'name=value' records, so a
+        # value carrying a line break could append a record of its
+        # own; the upload step reads those outputs, so an injected
+        # docker-image-tar would redirect what gets uploaded.
+
+        case "${mode}" in
+          single|per-image) ;;
+          *)
+            echo "::error::Invalid mode '${mode}';" \
+              "expected 'single' or 'per-image'"
+            exit 1
+            ;;
+        esac
+
+        # Strict booleans: anything other than true/false is a typo,
+        # not an opt-out. Accepting it silently would change what the
+        # action does.
+        for pair in \
+          "fail-on-empty:${INPUT_FAIL_ON_EMPTY}" \
+          "overwrite:${INPUT_OVERWRITE}"
+        do
+          bool_name="${pair%%:*}"
+          bool_value="${pair#*:}"
+          case "${bool_value}" in
+            true|false) ;;
+            *)
+              echo "::error::${bool_name} must be 'true' or 'false';" \
+                "got '${bool_value}'"
+              exit 1
+              ;;
+          esac
+        done
+
+        if [[ ! "${INPUT_RETENTION_DAYS}" =~ ^[0-9]+$ ]]; then
+          echo "::error::retention-days must be a whole number;" \
+            "got '${INPUT_RETENTION_DAYS}'"
           exit 1
         fi
-        read -ra images <<< "$image_list"
-        docker save "${images[@]}" -o docker-images.tar
-        echo "docker-image-tar=docker-images.tar" >> "$GITHUB_OUTPUT"
+
+        # Artifact names allow letters, digits, dot, dash and
+        # underscore. The allowlist also excludes line breaks and the
+        # characters GitHub rejects in artifact names.
+        if [[ ! "${artifact_name}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          echo "::error::artifact-name must match [A-Za-z0-9._-]+;" \
+            "got '${artifact_name}'"
+          exit 1
+        fi
+
+        # upload-artifact resolves 'path' through @actions/glob, which
+        # does far more than match '*': it expands a leading '~',
+        # treats leading '#' and '!' as comment and negation, uses
+        # backslash as an escape, trims surrounding whitespace and
+        # rejects non-leading '.' segments. A directory created
+        # literally here would then resolve to something else there.
+        #
+        # Enumerating those forms invites the next one to slip
+        # through, so the input has to match a positive allowlist
+        # instead: path segments of letters, digits, dot, dash and
+        # underscore, separated by single slashes. That also excludes
+        # absolute paths, parent traversal, line breaks and every
+        # glob metacharacter in one rule.
+        if [ -n "${out_dir}" ] && [ "${out_dir}" != "." ]; then
+          if [[ ! "${out_dir}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]
+          then
+            echo "::error::output-directory must be a relative path" \
+              "of [A-Za-z0-9._-] segments separated by '/';" \
+              "got '${out_dir}'"
+            exit 1
+          fi
+          # '.' and '..' match the segment pattern but must not pass.
+          old_ifs="${IFS}"
+          IFS='/'
+          read -ra out_segments <<< "${out_dir}"
+          IFS="${old_ifs}"
+          for segment in "${out_segments[@]}"; do
+            if [ "${segment}" = "." ] || [ "${segment}" = ".." ]; then
+              echo "::error::output-directory must not contain '.'" \
+                "or '..' segments: '${out_dir}'"
+              exit 1
+            fi
+          done
+        fi
+
+        # Resolve the default per mode. 'single' keeps writing
+        # docker-images.tar at the workspace root, as before.
+        if [ -z "${out_dir}" ]; then
+          if [ "${mode}" = "single" ]; then
+            out_dir="."
+          else
+            out_dir="docker-images"
+          fi
+        fi
+
+        # Resolve symlinks and '.' segments before deciding whether
+        # the directory sits inside the workspace: a lexical check
+        # accepts './.' and follows a symlink out of the tree.
+        workspace_canonical=$(cd "${GITHUB_WORKSPACE:-${PWD}}" && pwd -P)
+
+        # Check containment BEFORE creating anything. 'mkdir -p'
+        # follows a symlinked ancestor, so a checkout containing
+        # 'link -> /tmp/out' with output-directory 'link/new' would
+        # create /tmp/out/new outside the workspace, and only then be
+        # rejected. Walk up to the deepest ancestor that exists and
+        # canonicalise that instead.
+        probe="${out_dir}"
+        while [ ! -e "${probe}" ]; do
+          probe_parent=$(dirname "${probe}")
+          if [ "${probe_parent}" = "${probe}" ]; then
+            break
+          fi
+          probe="${probe_parent}"
+        done
+        if ! probe_canonical=$(cd "${probe}" && pwd -P); then
+          echo "::error::cannot resolve output-directory ancestor" \
+            "'${probe}'"
+          exit 1
+        fi
+        case "${probe_canonical}" in
+          "${workspace_canonical}"|"${workspace_canonical}"/*) ;;
+          *)
+            echo "::error::output-directory resolves outside the" \
+              "workspace: '${out_dir}'"
+            exit 1
+            ;;
+        esac
+
+        mkdir -p "${out_dir}"
+
+        # Re-check after creation: the ancestor test above covers the
+        # path that did not exist yet, this covers what now does.
+        out_canonical=$(cd "${out_dir}" && pwd -P)
+        case "${out_canonical}" in
+          "${workspace_canonical}"|"${workspace_canonical}"/*) ;;
+          *)
+            echo "::error::output-directory resolves outside the" \
+              "workspace: '${out_dir}'"
+            exit 1
+            ;;
+        esac
+
+        # per-image uploads the directory itself, so pointing it at
+        # the workspace root would upload the entire checkout.
+        if [ "${mode}" = "per-image" ] && \
+           [ "${out_canonical}" = "${workspace_canonical}" ]
+        then
+          echo "::error::output-directory must name a subdirectory" \
+            "in 'per-image' mode; the workspace root would upload" \
+            "the whole checkout"
+          exit 1
+        fi
+
+        # --- export -----------------------------------------------
+        # An empty list is a hard error by default, preserving the
+        # original behaviour, but callers whose build may legitimately
+        # produce nothing can opt out.
+        if [ -z "${image_list// /}" ]; then
+          if [ "${INPUT_FAIL_ON_EMPTY}" = "true" ]; then
+            echo "::error::Mandatory docker image names not provided"
+            exit 1
+          fi
+          echo "::notice::No images supplied; nothing to save"
+          {
+            echo "archive-count=0"
+            echo "archive-directory=${out_dir}"
+            echo "artifact-name=${artifact_name}"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        read -ra images <<< "${image_list}"
+
+        # 'docker save -o' writes through a symlink, so a link left in
+        # the workspace could redirect the archive outside the
+        # validated directory. '-L' also catches a dangling link,
+        # which '-e' would miss. Overwriting a regular file stays
+        # permitted, as before.
+        reject_symlink_destination() {
+          if [ -L "$1" ]; then
+            echo "::error::Refusing to write through a symbolic" \
+              "link: '$1'"
+            exit 1
+          fi
+        }
+
+        # Record every file written so the upload step can name them
+        # explicitly. Uploading the directory instead would sweep in
+        # anything already sitting there, which matters when a caller
+        # points output-directory at an existing directory.
+        written_paths=()
+
+        count=0
+        if [ "${mode}" = "single" ]; then
+          tar_path="${out_dir%/}/docker-images.tar"
+          reject_symlink_destination "${tar_path}"
+          docker save "${images[@]}" -o "${tar_path}"
+          count=1
+          written_paths+=("${tar_path}")
+          echo "docker-image-tar=${tar_path}" >> "$GITHUB_OUTPUT"
+          echo "Wrote ${tar_path} containing ${#images[@]} image(s)"
+        else
+          for image in "${images[@]}"; do
+            # '/' and ':' are legal in image references but not in
+            # filenames, so map them to underscores. Distinct
+            # references can collapse to the same name (a/b:1 and
+            # a_b:1 both yield a_b_1), so a collision fails rather
+            # than overwriting an earlier archive without warning.
+            safe=$(printf '%s' "${image}" | tr '/:' '__')
+            tar_path="${out_dir%/}/${safe}.tar"
+            if [ -e "${tar_path}" ]; then
+              echo "::error::Archive name collision for '${image}':" \
+                "${tar_path} already exists"
+              exit 1
+            fi
+            reject_symlink_destination "${tar_path}"
+            docker save "${image}" -o "${tar_path}"
+            count=$((count + 1))
+            written_paths+=("${tar_path}")
+            echo "Wrote ${tar_path}"
+          done
+        fi
+
+        {
+          echo "archive-count=${count}"
+          echo "archive-directory=${out_dir}"
+          echo "artifact-name=${artifact_name}"
+        } >> "$GITHUB_OUTPUT"
+
+        # upload-artifact accepts a newline-separated path list. The
+        # heredoc delimiter is safe against forgery here because both
+        # components of every path are validated: out_dir rejects line
+        # breaks, and image references cannot contain one (the list is
+        # split on whitespace, which includes newline).
+        {
+          echo "archive-paths<<ARCHIVE_PATHS_EOF"
+          printf '%s\n' "${written_paths[@]}"
+          echo "ARCHIVE_PATHS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Docker image archives"
+          echo ""
+          echo "| Property | Value |"
+          echo "| -------- | ----- |"
+          echo "| Mode | ${mode} |"
+          echo "| Archives | ${count} |"
+          echo "| Artifact | ${artifact_name} |"
+        } >> "$GITHUB_STEP_SUMMARY"
 
     - name: 'Upload docker images tar artifact'
+      # Nothing to upload when the image list was empty and the caller
+      # permitted it; if-no-files-found stays 'error' so a genuine
+      # export failure still surfaces. The path is the explicit list
+      # of files the export step wrote, rather than the directory
+      # holding them: naming the directory would upload anything else
+      # already present in it, and would re-derive the mode logic in
+      # an expression where it could drift.
+      if: steps.export_docker_images.outputs.archive-count != '0'
       # yamllint disable-line rule:line-length
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: docker-image
-        path: docker-images.tar
+        name: ${{ steps.export_docker_images.outputs.artifact-name }}
+        path: ${{ steps.export_docker_images.outputs.archive-paths }}
         if-no-files-found: error
-        overwrite: true
-        retention-days: 1
+        overwrite: ${{ inputs.overwrite }}
+        retention-days: ${{ inputs.retention-days }}
