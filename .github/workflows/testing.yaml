@@ -39,11 +39,6 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: "Checkout repository"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
       # Perform setup prior to running test(s)
       - name: "Testing setup step"
         shell: bash
@@ -55,7 +50,7 @@ jobs:
           echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "Running local action: ${{ github.repository }}"
-        uses: ./
+        uses: $/
         with:
           docker-artifacts-to-save: "hello-world:latest busybox:latest"
 
@@ -70,7 +65,7 @@ jobs:
 
       # --- per-image mode -------------------------------------
       - name: "Running local action [per-image mode]"
-        uses: ./
+        uses: $/
         id: per_image
         with:
           docker-artifacts-to-save: "hello-world:latest busybox:latest"
@@ -102,7 +97,7 @@ jobs:
 
       # --- single mode still writes the original layout ---------
       - name: "Running local action [single mode, explicit name]"
-        uses: ./
+        uses: $/
         id: single_mode
         with:
           docker-artifacts-to-save: "hello-world:latest"
@@ -131,7 +126,7 @@ jobs:
 
       # --- empty list, permitted --------------------------------
       - name: "Running local action [empty list permitted]"
-        uses: ./
+        uses: $/
         id: empty_ok
         with:
           docker-artifacts-to-save: ""
@@ -152,7 +147,7 @@ jobs:
 
       # --- invalid mode must fail -------------------------------
       - name: "Running local action [invalid mode]"
-        uses: ./
+        uses: $/
         id: bad_mode
         continue-on-error: true
         with:
@@ -169,7 +164,7 @@ jobs:
 
       # --- per-image into the workspace root must fail ----------
       - name: "Running local action [per-image at workspace root]"
-        uses: ./
+        uses: $/
         id: bad_dir
         continue-on-error: true
         with:
@@ -202,7 +197,7 @@ jobs:
             sym-dest/docker-images.tar
 
       - name: "Running local action [symlinked ancestor]"
-        uses: ./
+        uses: $/
         id: symlink_ancestor
         continue-on-error: true
         with:
@@ -228,7 +223,7 @@ jobs:
           echo "Symlinked ancestor refused, nothing created ✅"
 
       - name: "Running local action [symlinked destination]"
-        uses: ./
+        uses: $/
         id: symlink_dest
         continue-on-error: true
         with:
@@ -270,7 +265,7 @@ jobs:
           echo "must not be uploaded" > shared-out/stray.txt
 
       - name: "Running local action [pre-populated directory]"
-        uses: ./
+        uses: $/
         id: scoped
         with:
           docker-artifacts-to-save: "hello-world:latest busybox:latest"
@@ -307,7 +302,7 @@ jobs:
       # out silently, and upload-artifact glob-expanded the path.
 
       - name: "Running local action [newline in artifact-name]"
-        uses: ./
+        uses: $/
         id: bad_artifact_name
         continue-on-error: true
         with:
@@ -323,7 +318,7 @@ jobs:
           exit 1
 
       - name: "Running local action [dot-slash-dot output directory]"
-        uses: ./
+        uses: $/
         id: dot_slash_dot
         continue-on-error: true
         with:
@@ -340,7 +335,7 @@ jobs:
           exit 1
 
       - name: "Running local action [mistyped boolean]"
-        uses: ./
+        uses: $/
         id: bad_boolean
         continue-on-error: true
         with:
@@ -356,7 +351,7 @@ jobs:
           exit 1
 
       - name: "Running local action [tilde output directory]"
-        uses: ./
+        uses: $/
         id: tilde_dir
         continue-on-error: true
         with:
@@ -373,7 +368,7 @@ jobs:
           exit 1
 
       - name: "Running local action [negation output directory]"
-        uses: ./
+        uses: $/
         id: bang_dir
         continue-on-error: true
         with:
@@ -390,7 +385,7 @@ jobs:
           exit 1
 
       - name: "Running local action [glob in output directory]"
-        uses: ./
+        uses: $/
         id: glob_dir
         continue-on-error: true
         with:
@@ -408,7 +403,7 @@ jobs:
 
       # yamllint disable-line rule:line-length
       - name: "Running local action: ${{ github.repository }} [Override Failure]"
-        uses: ./
+        uses: $/
         id: failure
         continue-on-error: true
         with:
