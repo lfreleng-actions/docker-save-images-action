@@ -17,6 +17,8 @@ on:
       - '!.github/**'
       - '!.*'
       - '!tox.ini'
+      # Re-include this workflow: a change to it changes the self-test
+      - '.github/workflows/testing.yaml'
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
