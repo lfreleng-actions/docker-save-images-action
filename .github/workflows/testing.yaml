@@ -273,12 +273,98 @@ jobs:
           output-directory: "shared-out"
           artifact-name: "docker-archives-scoped"
 
-      - name: "Download the artifact just uploaded"
+      # The artifact service can fail to list an artifact for a moment
+      # after its upload (actions/download-artifact#505), so retry the
+      # download up to five times, waiting 2, 4, 8 and 16 seconds.
+      - name: "Download the artifact just uploaded [attempt 1]"
+        id: download_1
+        continue-on-error: true
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: "docker-archives-scoped"
           path: "downloaded"
+
+      - name: "Wait before download attempt 2"
+        if: steps.download_1.outcome == 'failure'
+        shell: bash
+        run: |
+          # Discard any partial download, then wait
+          rm -rf downloaded
+          sleep 2
+
+      - name: "Download the artifact just uploaded [attempt 2]"
+        id: download_2
+        if: steps.download_1.outcome == 'failure'
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: "docker-archives-scoped"
+          path: "downloaded"
+
+      - name: "Wait before download attempt 3"
+        if: steps.download_2.outcome == 'failure'
+        shell: bash
+        run: |
+          # Discard any partial download, then wait
+          rm -rf downloaded
+          sleep 4
+
+      - name: "Download the artifact just uploaded [attempt 3]"
+        id: download_3
+        if: steps.download_2.outcome == 'failure'
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: "docker-archives-scoped"
+          path: "downloaded"
+
+      - name: "Wait before download attempt 4"
+        if: steps.download_3.outcome == 'failure'
+        shell: bash
+        run: |
+          # Discard any partial download, then wait
+          rm -rf downloaded
+          sleep 8
+
+      - name: "Download the artifact just uploaded [attempt 4]"
+        id: download_4
+        if: steps.download_3.outcome == 'failure'
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: "docker-archives-scoped"
+          path: "downloaded"
+
+      - name: "Wait before download attempt 5"
+        if: steps.download_4.outcome == 'failure'
+        shell: bash
+        run: |
+          # Discard any partial download, then wait
+          rm -rf downloaded
+          sleep 16
+
+      - name: "Download the artifact just uploaded [attempt 5]"
+        id: download_5
+        if: steps.download_4.outcome == 'failure'
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: "docker-archives-scoped"
+          path: "downloaded"
+
+      - name: "Fail when every download attempt failed"
+        if: steps.download_5.outcome == 'failure'
+        shell: bash
+        run: |
+          # Stop here so the validation step below does not run
+          name="docker-archives-scoped"
+          echo "::error::Download of ${name} failed after 5 attempts ❌"
+          exit 1
 
       - name: "Validate the artifact holds archives only"
         shell: bash
